@@ -1,6 +1,8 @@
 from __future__ import annotations
-from typing import List
-from colorama import init as color_init, Fore, Style
+from typing import List, Dict
+from colorama import init as color_init, Fore
+import difflib
+
 from .operations import OperationFactory
 from .input_validators import parse_two_numbers
 from .calculation import Calculation
@@ -9,12 +11,36 @@ from .calculator_config import load_config
 from .calculator_memento import Caretaker
 from .history import History, LoggingObserver, AutoSaveObserver
 
+
+COMMANDS = {
+    "add", "subtract", "multiply", "divide", "power", "root",
+    "modulus", "int_divide", "percent", "abs_diff",
+    "history", "clear", "undo", "redo", "save", "load",
+    "help", "exit", "autosave", "precision"
+}
+
+# REPL-only aliases (translated before execution)
+ALIASES: Dict[str, str] = {
+    "+": "add",
+    "-": "subtract",
+    "*": "multiply",
+    "/": "divide",
+    "//": "int_divide",
+    "%": "modulus",
+    "^": "power",
+    "quit": "exit",
+}
+
+
 class Calculator:
     def __init__(self) -> None:
         cfg = load_config()
         self.cfg = cfg
         self.history = History(cfg.max_history_size)
         self.caretaker = Caretaker()
+
+        # runtime precision (mutable; default from config)
+        self.precision = cfg.precision
 
         # Keep explicit references so we can toggle autosave at runtime
         self.log_observer = LoggingObserver()
@@ -31,15 +57,15 @@ class Calculator:
 
         op = OperationFactory.create(op_name)
         result = op.execute(a, b)
-        # rounding for stored result can be consistent
-        result = round(result, self.cfg.precision)
+        # round using mutable runtime precision
+        result = round(result, self.precision)
 
         calc = Calculation.from_values(op_name, a, b, result)
         self.history.add(calc)
         self._notify(calc)
         return result
 
-    # Commands
+    # ----- Command helpers -----
     def cmd_history(self) -> List[Calculation]:
         return self.history.items()
 
@@ -63,20 +89,41 @@ class Calculator:
         self.caretaker.save(self.history.to_snapshot())
         return self.history.load_csv()
 
+    def cmd_get_precision(self) -> int:
+        return self.precision
+
+    def cmd_set_precision(self, n: int) -> int:
+        if n < 0 or n > 18:
+            # guardrail; pandas/float formatting gets messy beyond this
+            raise ValidationError("Precision must be between 0 and 18.")
+        self.precision = n
+        return self.precision
+
+
 def _help() -> str:
     return (
         "Commands:\n"
         "  add|subtract|multiply|divide|power|root|modulus|int_divide|percent|abs_diff a b\n"
-        "  history         - show calculation history\n"
+        "  history [N]     - show history (optionally last N)\n"
         "  clear           - clear history\n"
         "  undo            - undo last change\n"
         "  redo            - redo last undone change\n"
         "  save            - save history to CSV\n"
         "  load            - load history from CSV\n"
         "  autosave [on|off] - toggle or show autosave status\n"
+        "  precision [N]   - show or set rounding precision (0..18)\n"
         "  help            - show this help\n"
-        "  exit            - quit\n"
+        "  exit | quit     - quit\n"
+        "\nAliases for ops: +  -  *  /  //  %  ^\n"
     )
+
+
+def _suggest(cmd: str) -> str | None:
+    # Suggest close commands for typos
+    candidates = list(COMMANDS | set(ALIASES.keys()))
+    matches = difflib.get_close_matches(cmd, candidates, n=1, cutoff=0.6)
+    return matches[0] if matches else None
+
 
 def main() -> None:
     color_init(autoreset=True)
@@ -89,9 +136,10 @@ def main() -> None:
             if not line:
                 continue
             parts = line.split()
-            cmd, args = parts[0].lower(), parts[1:]
+            cmd_raw, args = parts[0], parts[1:]
+            cmd = ALIASES.get(cmd_raw.lower(), cmd_raw.lower())
 
-            if cmd == "exit":
+            if cmd in {"exit", "quit"}:
                 print(Fore.CYAN + "Bye!")
                 break
 
@@ -100,8 +148,19 @@ def main() -> None:
                 continue
 
             elif cmd == "history":
-                for i, c in enumerate(calc.cmd_history(), 1):
-                    print(f"{i}. {c.operation}({c.a}, {c.b}) = {c.result} @ {c.timestamp}")
+                limit = None
+                if args and args[0].isdigit():
+                    limit = int(args[0])
+                    if limit < 0:
+                        raise ValidationError("Limit must be non-negative.")
+                items = calc.cmd_history()
+                if limit is not None:
+                    items = items[-limit:]
+                if not items:
+                    print(Fore.YELLOW + "(history is empty)")
+                else:
+                    for i, c in enumerate(items, 1):
+                        print(f"{i}. {c.operation}({c.a}, {c.b}) = {c.result} @ {c.timestamp}")
                 continue
 
             elif cmd == "clear":
@@ -129,7 +188,6 @@ def main() -> None:
                 print(Fore.GREEN + f"Loaded {n} entries.")
                 continue
 
-            # --- NEW: autosave toggle/show ---
             elif cmd == "autosave":
                 if not args:
                     print(
@@ -142,14 +200,34 @@ def main() -> None:
                     print(Fore.CYAN + f"Auto-save set to {'ON' if val else 'OFF'}")
                 continue
 
+            elif cmd == "precision":
+                if not args:
+                    print(Fore.CYAN + f"Precision: {calc.cmd_get_precision()}")
+                else:
+                    try:
+                        n = int(args[0])
+                    except ValueError:
+                        raise ValidationError("Precision must be an integer.")
+                    calc.cmd_set_precision(n)
+                    print(Fore.CYAN + f"Precision set to {n}")
+                continue
+
             else:
-                # operation commands
+                # operation commands (+ aliases handled already)
                 a, b = parse_two_numbers(args)
                 result = calc.calculate(cmd, a, b)
                 print(Fore.GREEN + f"Result: {result}")
 
         except (OperationError, ValidationError, HistoryError) as e:
-            print(Fore.RED + f"Error: {e}")
+            # spell-check suggestion for unknown commands
+            if isinstance(e, OperationError) and "Unknown operation" in str(e):
+                suggestion = _suggest(cmd)
+                msg = f"{e}"
+                if suggestion:
+                    msg += f" (did you mean '{suggestion}'?)"
+                print(Fore.RED + f"Error: {msg}")
+            else:
+                print(Fore.RED + f"Error: {e}")
         except KeyboardInterrupt:  # pragma: no cover
             print("\n" + Fore.CYAN + "Bye!")
             break
@@ -160,6 +238,7 @@ def main() -> None:
             print(Fore.RED + f"Calculator error: {e}")
         except Exception as e:  # pragma: no cover
             print(Fore.RED + f"Unexpected error: {e}")
+
 
 if __name__ == "__main__":  # pragma: no cover
     main()

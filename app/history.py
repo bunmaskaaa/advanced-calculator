@@ -90,3 +90,10 @@ class AutoSaveObserver:
     def update(self, calc: Calculation, history: History) -> None:
         if self._enabled:
             history.save_csv()
+
+    # --- NEW: runtime toggle API ---
+    def set_enabled(self, value: bool) -> None:
+        self._enabled = bool(value)
+
+    def is_enabled(self) -> bool:
+        return self._enabled

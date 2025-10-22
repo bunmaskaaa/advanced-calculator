@@ -21,7 +21,6 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     env:
-      # Ensure 'import app' works regardless of runner cwd quirks
       PYTHONPATH: ${{ github.workspace }}
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
@@ -39,8 +38,10 @@ jobs:
       - name: 📦 Install dependencies
         shell: bash
         run: |
+          set -euxo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
+            cat requirements.txt
             pip install -r requirements.txt
           fi
           # Ensure these are present even if requirements.txt is minimal
@@ -49,24 +50,34 @@ jobs:
       - name: 🔎 Sanity check imports
         shell: bash
         run: |
+          set -euxo pipefail
           python - <<'PY'
           import sys, os
           print("cwd:", os.getcwd())
           print("sys.path[0]:", sys.path[0])
-          print("PYTHONPATH env:", os.getenv("PYTHONPATH"))
+          print("PYTHONPATH:", os.getenv("PYTHONPATH"))
           import app
           print("Import app OK. Python:", sys.version)
           PY
 
-      - name: 🧪 Run pytest with coverage
+      - name: 🔎 Pytest collect-only (diagnostic)
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          python -m pytest -q --collect-only
+
+      - name: 🧪 Run pytest with coverage (≥90%)
         shell: bash
         run: |
+          set -euxo pipefail
           python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=90
 
       - name: 📊 Generate HTML coverage report
         if: always()
         shell: bash
         run: |
+          set -euxo pipefail
           python -m pytest --cov=app --cov-report=html
 
       - name: 📤 Upload coverage HTML artifact

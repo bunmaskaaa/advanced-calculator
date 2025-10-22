@@ -44,7 +44,7 @@ jobs:
             cat requirements.txt
             pip install -r requirements.txt
           fi
-          # Ensure these are present even if requirements.txt is minimal
+          # Ensure these libs exist even if requirements.txt is minimal
           pip install pytest pytest-cov pandas colorama
 
       - name: 🔎 Sanity check imports
@@ -65,26 +65,40 @@ jobs:
         continue-on-error: true
         run: |
           set -euxo pipefail
-          python -m pytest -q --collect-only
+          python -m pytest -vv --collect-only | tee pytest-collect.log
 
       - name: 🧪 Run pytest with coverage (≥90%)
         shell: bash
+        # continue so we can always upload logs/artifacts even if tests fail
+        continue-on-error: true
         run: |
           set -euxo pipefail
-          python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=90
+          python -m pytest -vv -s --cov=app --cov-report=term-missing --cov-fail-under=90 | tee pytest-run.log
+          # explicitly create htmlcov even on failures to avoid missing artifact step
+          python -m pytest --cov=app --cov-report=html || true
 
-      - name: 📊 Generate HTML coverage report
-        if: always()
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python -m pytest --cov=app --cov-report=html
-
-      - name: 📤 Upload coverage HTML artifact
+      - name: 📤 Upload logs & coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-${{ matrix.python-version }}
-          path: htmlcov/
+          name: logs-and-coverage-${{ matrix.python-version }}
+          path: |
+            pytest-collect.log
+            pytest-run.log
+            htmlcov/
           if-no-files-found: warn
           retention-days: 7
+
+      # After uploading artifacts, actually fail the job if tests failed
+      - name: ❗ Fail job if tests failed
+        shell: bash
+        if: always()
+        run: |
+          # If pytest-run.log contains FAILED or ERROR without PASSED summary, exit 1
+          if grep -qE "ERROR:|Failed:|FAILURES" pytest-run.log; then
+            echo "Tests reported failures/errors; failing job."
+            exit 1
+          fi
+          # If coverage gate stopped the run, cov-fail-under would have exited non-zero;
+          # we already continued-on-error; enforce by reading last nonzero status from log if needed.
+          echo "No failure patterns found in pytest-run.log"

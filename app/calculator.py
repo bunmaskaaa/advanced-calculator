@@ -213,6 +213,11 @@ def main() -> None:
                 continue
 
             else:
+                # ---- OPERATION PATH (with early unknown-op check) ----
+                # If it's not a known operation name, fail *before* parsing operands.
+                if cmd not in OperationFactory.mapping:
+                    raise OperationError(f"Unknown operation: {cmd}")
+
                 # operation commands (+ aliases handled already)
                 a, b = parse_two_numbers(args)
                 result = calc.calculate(cmd, a, b)

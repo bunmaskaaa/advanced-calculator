@@ -20,6 +20,12 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
+    env:
+      # Ensure 'import app' works regardless of runner cwd quirks
+      PYTHONPATH: ${{ github.workspace }}
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+
     steps:
       - name: 🧩 Check out code
         uses: actions/checkout@v4
@@ -37,15 +43,25 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
+          # Ensure these are present even if requirements.txt is minimal
           pip install pytest pytest-cov pandas colorama
+
+      - name: 🔎 Sanity check imports
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys, os
+          print("cwd:", os.getcwd())
+          print("sys.path[0]:", sys.path[0])
+          print("PYTHONPATH env:", os.getenv("PYTHONPATH"))
+          import app
+          print("Import app OK. Python:", sys.version)
+          PY
 
       - name: 🧪 Run pytest with coverage
         shell: bash
         run: |
           python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=90
-        env:
-          PYTHONUNBUFFERED: "1"
-          PYTHONDONTWRITEBYTECODE: "1"
 
       - name: 📊 Generate HTML coverage report
         if: always()
